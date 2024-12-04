@@ -6,8 +6,8 @@ server:
 
 # OSRM 엔진 설정
 osrm:
-  path: "wsl"  # OSRM 실행 파일 경로
-  map_path: "/mnt/c/Users/user/Desktop/OSRM지팡이/maps/south-korea-latest.osrm" # OSRM 맵 파일 경로
+  path: "/mnt/c/Users/user/Desktop/OSRM/osrm-backend/build/osrm-routed"
+  map_path: "/mnt/c/Users/user/Desktop/OSRM/maps/south-korea-latest.osrm"
   port: 5000
   algorithm: "mld"
   max_retries: 3
@@ -33,7 +33,7 @@ routing:
 
 # 지오코딩 설정
 geocoding:
-  user_agent: "MyNavigationApp/1.0"
+  user_agent: "MyApp/1.0"
   timeout: 10
   max_retries: 3
   cache_size: 100

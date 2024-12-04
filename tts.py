@@ -26,6 +26,7 @@ class TTSManager:
         self.is_speaking = False
         self.should_stop = False
         self.voice_enabled = True
+        self._lock = threading.Lock()
         
         # TTS 설정
         self.rate = self.config['tts'].get('rate', 150)
@@ -80,25 +81,28 @@ class TTSManager:
 
     def text_to_speech(self, text: str, priority: bool = False) -> None:
         """텍스트를 음성으로 변환"""
-        if not self.voice_enabled:
-            logger.debug("음성 출력이 비활성화되어 있습니다.")
-            return
+        with self._lock:
+            if not self.voice_enabled:
+                logger.debug("음성 출력이 비활성화되어 있습니다.")
+                return
 
-        try:
-            if priority:
-                # 우선순위 메시지는 큐의 앞부분에 추가
-                temp_queue = queue.Queue()
-                temp_queue.put(text)
-                while not self.message_queue.empty():
-                    temp_queue.put(self.message_queue.get())
-                self.message_queue = temp_queue
-            else:
-                self.message_queue.put(text)
+            try:
+                if priority:
+                    # 우선순위 메시지는 큐의 앞부분에 추가
+                    temp_queue = queue.Queue()
+                    temp_queue.put(text)
+                    while not self.message_queue.empty():
+                        temp_queue.put(self.message_queue.get())
+                    self.message_queue = temp_queue
+                else:
+                    self.message_queue.put(text)
+                    
+                logger.debug(f"메시지 큐에 추가됨: {text}")
                 
-            logger.debug(f"메시지 큐에 추가됨: {text}")
+            except Exception as e:
+                logger.error(f"메시지 큐 처리 중 오류 발생: {str(e)}")
             
-        except Exception as e:
-            logger.error(f"메시지 큐 처리 중 오류 발생: {str(e)}")
+            pass
 
     def _process_speech_queue(self) -> None:
         """메시지 큐 처리"""

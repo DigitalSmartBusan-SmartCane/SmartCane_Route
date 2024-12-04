@@ -1,142 +1,146 @@
 # main.py
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-import json
-from typing import List, Dict, Any, Optional
-import asyncio
-import uvicorn
-import yaml
-from server_manager import OSRMServer
+import logging
 import signal
 import sys
-from config import load_config
 import threading
-from datetime import datetime
-import logging
-from gui import NavigationGUI
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
+import json
 import tkinter as tk
-from routing import RouteManager
-from geocoding import GeocodingManager
+from typing import Tuple, List, Optional
 
+from server import ConnectionManager, NavigationSystem
+from server_manager import OSRMServer  # OSRMServer가 정의된 모듈을 import
+from gui import MapGUI  # GUI 관련 클래스 import
+from config import ConfigManager  # 구성 파일 로드 클래스 import
 
 # 로깅 설정
 logging.basicConfig(
-   level=logging.INFO,
-   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-   handlers=[
-       logging.FileHandler('navigation.log'),
-       logging.StreamHandler()
-   ]
+    level=logging.DEBUG,  # 필요에 따라 INFO로 변경 가능
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('navigation.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger('NavigationMain')
 
-class NavigationState:
-   def __init__(self):
-       self.destination = None
-       self.current_location = None
-       self.route = None
-       self.is_active = False
-       self.last_update = datetime.now()
-
-   def update_location(self, location: Dict[str, float]):
-       """위치 정보 업데이트"""
-       self.current_location = (location['latitude'], location['longitude'])
-       self.last_update = datetime.now()
-
-   def set_destination(self, destination: Dict[str, Any]):
-       """목적지 설정"""
-       self.destination = (destination['latitude'], destination['longitude'])
-       self.is_active = True
-
-   def clear(self):
-       """상태 초기화"""
-       self.destination = None
-       self.current_location = None
-       self.route = None
-       self.is_active = False
-
-class NavigationSystem:
-   def __init__(self):
-       self.config = load_config()
-       self.root = tk.Tk()
-       self.setup_managers()
-       self.gui = None
-       self.websocket_manager = None
-       self.nav_state = NavigationState()
-
-   def setup_managers(self):
-       """매니저 초기화"""
-       self.route_manager = RouteManager()
-       self.geocoding_manager = GeocodingManager()
-
-   def handle_destination(self, destination: str, websocket: WebSocket):
-       """목적지 처리"""
-       coords = self.geocoding_manager.validate_address(destination)
-       if coords:
-           self.nav_state.set_destination(coords)
-           if self.gui:
-               self.gui.set_destination((coords['latitude'], coords['longitude']), coords['address'])
-           return True
-       return False
-
-class ConnectionManager:
-   def __init__(self):
-       self.active_connections: List[WebSocket] = []
-
-   async def connect(self, websocket: WebSocket):
-       await websocket.accept()
-       self.active_connections.append(websocket)
-
-   def disconnect(self, websocket: WebSocket):
-       self.active_connections.remove(websocket)
-
-   async def broadcast(self, message: str):
-       for connection in self.active_connections:
-           await connection.send_text(message)
-
-manager = ConnectionManager()
+# FastAPI 앱 초기화
 app = FastAPI()
-navigation_system = None
+
+# 정적 파일 및 템플릿 설정
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+# 전역 인스턴스 생성
+manager = ConnectionManager()
+navigation_gui = None  # GUI 인스턴스는 나중에 초기화
+navigation_system = None  # NavigationSystem 인스턴스는 나중에 초기화
 osrm_server = None
+config_manager = ConfigManager()
+
+def update_gui(current_location: Tuple[float, float], 
+               route: Optional[List[Tuple[float, float]]] = None,
+               instruction: str = None):
+    """GUI 업데이트 함수"""
+    try:
+        logger.debug(f"GUI 업데이트 호출: 위치={current_location}, 경로={'있음' if route else '없음'}, 안내='{instruction}'")
+        if navigation_gui:
+            # destination 정보를 navigation_system에서 가져옴
+            destination = navigation_system.nav_state.destination if navigation_system else None
+            navigation_gui.update_map_async(current_location, route, destination)
+            if instruction:
+                print(f"\n경로 안내: {instruction}")
+                logger.info(f"경로 안내: {instruction}")
+    except Exception as e:
+        logger.error(f"GUI 업데이트 중 오류 발생: {str(e)}")
+
+def initialize_navigation_system():
+    """NavigationSystem 초기화"""
+    global navigation_system
+    navigation_system = NavigationSystem(on_update=update_gui)
+
+@app.get("/", response_class=HTMLResponse)
+async def get_map(request: Request):
+    """map.html을 렌더링"""
+    try:
+        return templates.TemplateResponse("map.html", {"request": request})
+    except Exception as e:
+        logger.error(f"Error rendering map.html: {str(e)}")
+        return HTMLResponse(content="Error loading map", status_code=500)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-   await manager.connect(websocket)
-   try:
-       while True:
-           data = await websocket.receive_text()
-           message = json.loads(data)
-           
-           if message["type"] == "destination":
-               if navigation_system.handle_destination(message["data"], websocket):
-                   await websocket.send_json({
-                       "type": "voice_guidance",
-                       "message": "목적지가 설정되었습니다."
-                   })
-               else:
-                   await websocket.send_json({
-                       "type": "voice_guidance",
-                       "message": "목적지를 찾을 수 없습니다."
-                   })
+    await manager.connect(websocket)
+    logger.info("connection open")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            message_type = message.get("type")
+            logger.debug(f"수신된 메시지 타입: {message_type}")
 
-           elif message["type"] == "location":
-               current_location = (
-                   message["data"]["latitude"],
-                   message["data"]["longitude"]
-               )
-               navigation_system.gui.update_current_location(current_location)
+            if message_type == "location":
+                location_data = message.get("data")
+                if location_data:
+                    success = navigation_system.update_location(location_data)
+                    if success:
+                        await websocket.send_json({
+                            "type": "ack",
+                            "message": "위치 업데이트 완료"
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "위치 업데이트 실패"
+                        })
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "위치 데이터 누락"
+                    })
 
-   except WebSocketDisconnect:
-       manager.disconnect(websocket)
-   except Exception as e:
-       logger.error(f"위치 업데이트 처리 중 오류 발생: {str(e)}")
+            elif message_type == "destination":
+                destination_data = message.get("data")
+                if destination_data:
+                    success = navigation_system.handle_destination(destination_data)
+                    if success:
+                        await websocket.send_json({
+                            "type": "ack",
+                            "message": "목적지 설정 완료"
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "목적지 설정 실패"
+                        })
+
+            else:
+                logger.warning(f"알 수 없는 메시지 타입: {message_type}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"알 수 없는 메시지 타입: {message_type}"
+                })
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        logger.info("서버와의 연결이 종료되었습니다")
+    except Exception as e:
+        logger.error(f"WebSocket 처리 중 오류 발생: {str(e)}")
+        await websocket.close()
+    finally:
+        logger.info("WebSocket connection closed")
 
 def run_fastapi_server():
-    config = load_config()
+    """FastAPI 서버 실행"""
     uvicorn.run(
         app,
-        host=config['server']['host'],
-        port=config['server']['port'],
+        host=config_manager.config['server']['host'],
+        port=config_manager.config['server']['port'],
         log_level="info"
     )
 
@@ -145,35 +149,57 @@ def signal_handler(signum, frame):
     logger.info("\n프로그램을 종료합니다...")
     if osrm_server:
         osrm_server.stop()
+    if navigation_system:
+        navigation_system.nav_state.clear()
+    if navigation_gui:
+        navigation_gui.master.destroy()
     sys.exit(0)
 
+def start_fastapi_server():
+    """FastAPI 서버를 별도의 스레드에서 실행"""
+    server_thread = threading.Thread(target=run_fastapi_server, daemon=True)
+    server_thread.start()
+
+def initialize_gui():
+    """GUI 초기화 및 실행"""
+    global navigation_gui
+    root = tk.Tk()
+    navigation_gui = MapGUI(root)
+    root.mainloop()
+
 def main():
-    global navigation_system, osrm_server
+    global osrm_server
 
     try:
         # OSRM 서버 시작
-        osrm_server = OSRMServer()
+        osrm_server = OSRMServer(config_manager.config)
         if not osrm_server.start():
             logger.error("OSRM 서버 시작 실패")
             return
 
-        # 내비게이션 시스템 초기화
-        navigation_system = NavigationSystem()
-        navigation_system.gui = NavigationGUI(navigation_system.root)
+        # NavigationSystem 초기화
+        initialize_navigation_system()
 
-        # FastAPI 서버 실행
-        server_thread = threading.Thread(target=run_fastapi_server, daemon=True)
-        server_thread.start()
+        # FastAPI 서버 시작 (별도 스레드)
+        start_fastapi_server()
 
-        # GUI 메인 루프 시작
-        navigation_system.root.mainloop()
+        # GUI 초기화 (메인 스레드에서 실행)
+        initialize_gui()
 
-    except Exception as e:
-        logger.error(f"프로그램 실행 중 오류 발생: {str(e)}")
-    finally:
-        # 서버 종료
+    except KeyboardInterrupt:
+        logger.info("\n프로그램을 종료합니다...")
         if osrm_server:
             osrm_server.stop()
+        if navigation_gui:
+            navigation_gui.master.destroy()
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"프로그램 실행 중 오류 발생: {str(e)}")
+        if osrm_server:
+            osrm_server.stop()
+        if navigation_gui:
+            navigation_gui.master.destroy()
+        sys.exit(1)
 
 if __name__ == "__main__":
     # 시그널 핸들러 등록

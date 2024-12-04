@@ -5,6 +5,8 @@ import time
 from collections import OrderedDict
 from config import load_config
 import logging
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderServiceError
 
 logger = logging.getLogger('GeocodingManager')
 
@@ -26,6 +28,14 @@ class GeoCache:
                 del self.cache[address]
         return None
 
+    def cleanup_expired(self):
+        """만료된 캐시 항목 정리"""
+        current_time = time.time()
+        expired_keys = [k for k, (_, t) in self.cache.items() 
+                    if current_time - t > self.expiry_time]
+        for k in expired_keys:
+            del self.cache[k]
+
     def set(self, address: str, data: Dict):
         """좌표 정보 캐시에 저장"""
         if len(self.cache) >= self.max_size:
@@ -34,47 +44,36 @@ class GeoCache:
 
 class GeocodingManager:
     """지오코딩 관리 클래스"""
-    def __init__(self):
+    def __init__(self, user_agent: str = "MyApp/1.0"):
         self.config = load_config()
         self.cache = GeoCache(self.config['geocoding']['cache_size'])
         self.headers = {
-            'User-Agent': self.config['geocoding']['user_agent']
+            'User-Agent': 'YourAppName/1.0 (your.email@example.com)'
         }
         self.base_url = self.config['geocoding']['nominatim_url']
         self.timeout = self.config['geocoding']['timeout']
         self.max_retries = self.config['geocoding']['max_retries']
+        self.geocoding_api_url = "https://nominatim.openstreetmap.org/search"
+        self.headers = {
+            'User-Agent': 'MyNavigationApp/1.0 (contact@myapp.com)'
+        }
+        self.geolocator = Nominatim(user_agent=user_agent)
 
-    def validate_address(self, address):
+    def validate_address(self, address: str) -> Optional[Dict[str, float]]:
         """주소를 좌표로 변환"""
         try:
-            encoded_address = quote(address + " 부산")  # 지역명 추가
-            url = f"https://nominatim.openstreetmap.org/search?q={encoded_address}&format=json&limit=1"
-            
-            response = requests.get(
-                url, 
-                headers=self.headers,
-                timeout=self.config['geocoding']['timeout']
-            )
-            
-            if response.status_code == 200:
-                geocode_result = response.json()
-                if geocode_result:
-                    location = geocode_result[0]
-                    return {
-                        "latitude": float(location['lat']),
-                        "longitude": float(location['lon']),
-                        "address": location['display_name']
-                    }
-                else:
-                    logger.warning(f"주소를 찾을 수 없습니다: {address}")
-                    return None
-                    
+            location = self.geolocator.geocode(address)
+            if location:
+                logger.debug(f"지오코딩 성공: {address} -> ({location.latitude}, {location.longitude})")
+                return {'latitude': location.latitude, 'longitude': location.longitude}
             else:
-                logger.error(f"API 응답 오류: {response.status_code}")
+                logger.warning(f"지오코딩 실패: {address}을 찾을 수 없습니다.")
                 return None
-                
+        except GeocoderServiceError as e:
+            logger.error(f"지오코딩 서비스 오류: {str(e)}")
+            return None
         except Exception as e:
-            logger.error(f"주소 변환 중 오류 발생: {str(e)}")
+            logger.error(f"지오코딩 중 예외 발생: {str(e)}")
             return None
 
     def get_address_details(self, lat: float, lon: float) -> Optional[Dict]:

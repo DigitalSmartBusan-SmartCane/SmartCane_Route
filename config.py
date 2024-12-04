@@ -1,5 +1,3 @@
-# config.py
-
 import yaml
 import os
 from typing import Dict, Any
@@ -150,3 +148,8 @@ def get_config(key: str, default: Any = None) -> Any:
 def update_config(key: str, value: Any, save: bool = True):
     """설정값 업데이트"""
     config_manager.update(key, value, save)
+
+def validate_routing_config(config: Dict) -> bool:
+    """라우팅 설정 유효성 검사"""
+    required_fields = ['osrm_url', 'reroute_threshold', 'arrival_threshold']
+    return all(field in config['routing'] for field in required_fields)

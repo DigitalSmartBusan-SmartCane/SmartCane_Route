@@ -1,1 +1,2 @@
-osrm-backend/
+osrm-backend/*
+maps/*

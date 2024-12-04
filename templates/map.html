@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 내비게이션</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    
+    <style>
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+        #navigation-info {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            min-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="navigation-info">
+        <div id="current-instruction">안내 대기 중...</div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        let map;
+        let currentMarker;
+        let routeLayer;
+        let ws;
+        
+        // 지도 초기화
+        function initMap() {
+            map = L.map('map').setView([35.1795543, 129.0756416], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+        }
+
+        // WebSocket 연결
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8000/ws');
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+
+            ws.onclose = function() {
+                setTimeout(connectWebSocket, 1000);
+            };
+        }
+
+        // 메시지 처리
+        function handleWebSocketMessage(data) {
+            switch(data.type) {
+                case 'current_location':
+                    updateCurrentLocation(data.data);
+                    break;
+                case 'route_info':
+                    updateRouteInfo(data.data);
+                    break;
+                case 'voice_guidance':
+                    document.getElementById('current-instruction').textContent = data.message;
+                    break;
+            }
+        }
+
+        // 현재 위치 업데이트
+        function updateCurrentLocation(location) {
+            const latlng = [location.latitude, location.longitude];
+            if (!currentMarker) {
+                currentMarker = L.marker(latlng).addTo(map);
+            } else {
+                currentMarker.setLatLng(latlng);
+            }
+            map.setView(latlng);
+        }
+
+        // 경로 정보 업데이트
+        function updateRouteInfo(routeData) {
+            if (routeLayer) {
+                map.removeLayer(routeLayer);
+            }
+
+            if (routeData.geometry) {
+                const decodedGeometry = decodeGeometry(routeData.geometry);
+                routeLayer = L.polyline(decodedGeometry, {
+                    color: 'blue',
+                    weight: 5
+                }).addTo(map);
+                
+                map.fitBounds(routeLayer.getBounds(), {
+                    padding: [50, 50]
+                });
+            }
+        }
+
+        // 폴리라인 디코딩
+        function decodeGeometry(str) {
+            var index = 0,
+                lat = 0,
+                lng = 0,
+                coordinates = [],
+                shift = 0,
+                result = 0,
+                byte = null;
+            
+            while (index < str.length) {
+                byte = null;
+                shift = 0;
+                result = 0;
+                
+                do {
+                    byte = str.charCodeAt(index++) - 63;
+                    result |= (byte & 0x1f) << shift;
+                    shift += 5;
+                } while (byte >= 0x20);
+                
+                var dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+                lat += dlat;
+                
+                shift = 0;
+                result = 0;
+                
+                do {
+                    byte = str.charCodeAt(index++) - 63;
+                    result |= (byte & 0x1f) << shift;
+                    shift += 5;
+                } while (byte >= 0x20);
+                
+                var dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+                lng += dlng;
+                
+                coordinates.push([lat * 1e-5, lng * 1e-5]);
+            }
+            
+            return coordinates;
+        }
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            initMap();
+            connectWebSocket();
+        });
+    </script>
+</body>
+</html>

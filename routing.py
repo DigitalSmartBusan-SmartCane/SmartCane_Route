@@ -1,11 +1,12 @@
 import requests
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import time
 from config import load_config
 import logging
 from datetime import datetime
 from collections import OrderedDict
+from math import sin, cos, sqrt, atan2, radians
 
 # 로깅 설정
 logging.basicConfig(
@@ -20,38 +21,39 @@ instruction_translation = {
     "turn": "회전",
     "turn right": "우회전",
     "turn left": "좌회전",
-    "depart": "출발",
-    "arrive": "도착",
     "continue": "직진",
     "straight": "직진",
     
     # 상세 방향
-    "slight right": "우측 방향",
-    "slight left": "좌측 방향",
+    "slight right": "우측",
+    "slight left": "좌측",
     "sharp right": "급우회전",
     "sharp left": "급좌회전",
     "uturn": "유턴",
     
     # 기타 안내
     "roundabout": "로터리",
-    "merge": "차선 합류",
+    "merge": "합류",
     "ramp": "램프",
     "exit": "출구",
     "keep right": "우측 유지",
     "keep left": "좌측 유지",
+    "fork": "우측",
+    "fork right": "우측",
+    "fork left": "좌측",
+    "fork straight": "직진",
     
     # 추가 안내
     "enter roundabout": "로터리 진입",
-    "exit roundabout": "로터리 퇴출",
-    "finish": "목적지",
+    "exit roundabout": "로터리 출구",
+    "finish": "도착",
     "via": "경유",
-    "head": "방향",
+    "head": "진행",
     "end of road": "도로 끝",
-    "fork": "갈림길",
     "motorway": "고속도로",
-    "motorway link": "고속도로 연결로",
-    "on ramp": "진입로",
-    "off ramp": "출구로"
+    "motorway link": "고속도로 진입",
+    "on ramp": "진입",
+    "off ramp": "출구"
 }
 
 class RouteCache:
@@ -84,169 +86,170 @@ class RouteCache:
             self.cache.popitem(last=False)
         self.cache[key] = (route_data, time.time())
 
+class RouteNotFoundError(Exception):
+    pass
+
 class RouteManager:
-    """경로 관리 클래스"""
-    def __init__(self):
-        """초기화"""
-        self.config = load_config()
-        self.osrm_url = self.config['routing']['osrm_url']
-        self.cache = RouteCache(
-            max_size=100,
-            expiry=self.config['routing']['cache_duration']
-        )
-        self.last_request_time = 0
-        self.request_interval = 1.0  # 초당 요청 제한
+    def __init__(self, osrm_url: str = "http://localhost:5000"):
+        self.osrm_url = osrm_url
+        self.last_instruction = None
+        self.current_segment_index = 0
 
-    def get_directions(self, current_location_coords: Tuple[float, float],
-                      destination_coords: Tuple[float, float]) -> Optional[Dict]:
-        """경로 안내 요청 및 변환"""
+    def get_directions(self, start: Tuple[float, float], end: Dict[str, float]) -> Optional[Dict]:
+        """OSRM API를 사용하여 도보 경로를 가져옵니다"""
         try:
-            # 캐시 확인
-            cached_route = self.cache.get(current_location_coords, destination_coords)
-            if cached_route:
-                return cached_route
-
-            # 요청 간격 제어
-            current_time = time.time()
-            time_since_last = current_time - self.last_request_time
-            if time_since_last < self.request_interval:
-                time.sleep(self.request_interval - time_since_last)
-
-            # OSRM API 요청
-            url = (
-                f"{self.osrm_url}/route/v1/driving/"
-                f"{current_location_coords[1]},{current_location_coords[0]};"
-                f"{destination_coords[1]},{destination_coords[0]}"
-            )
-            
+            url = f"{self.osrm_url}/route/v1/foot/{start[1]},{start[0]};{end['longitude']},{end['latitude']}"
             params = {
-                'steps': 'true',
-                'annotations': 'true',
-                'geometries': 'geojson',
-                'overview': 'full',
-                'alternatives': 'false'
+                "overview": "full",
+                "geometries": "geojson",
+                "steps": "true"
             }
-
-            response = requests.get(
-                url,
-                params=params,
-                timeout=self.config['routing']['api_timeout']
-            )
+            logger.debug(f"OSRM 요청 URL: {url}")
             
-            self.last_request_time = time.time()
-
-            if response.status_code == 200:
-                route_data = response.json()
-                if route_data.get('routes'):
-                    formatted_route = self.format_route(route_data['routes'][0])
-                    self.cache.set(current_location_coords, destination_coords, formatted_route)
-                    return formatted_route
-                else:
-                    logger.warning("경로를 찾을 수 없습니다.")
-                    return None
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if 'routes' in data and len(data['routes']) > 0:
+                logger.info("경로 데이터 수신 성공")
+                return data['routes'][0]
             else:
-                logger.error(f"OSRM API 오류: {response.status_code}")
+                logger.warning(f"유효한 경로를 찾을 수 없습니다.")
                 return None
-
-        except requests.Timeout:
-            logger.error("OSRM 서버 요청 시간 초과")
-            return None
-        except requests.RequestException as e:
-            logger.error(f"OSRM API 요청 중 오류 발생: {str(e)}")
-            return None
+                
         except Exception as e:
-            logger.error(f"경로 검색 중 오류 발생: {str(e)}")
+            logger.error(f"경로 가져오기 중 예외 발생: {str(e)}")
             return None
+
+    def get_next_instruction(self, current_location: Tuple[float, float], route: Dict) -> str:
+        """현재 위치에 따른 다음 안내 메시지를 생성합니다"""
+        try:
+            if 'legs' not in route or not route['legs']:
+                return "경로 안내를 시작할 수 없습니다."
+
+            steps = route['legs'][0]['steps']
+            if not steps:
+                return "안내할 경로가 없습니다."
+
+            # 현재 위치에서 가장 가까운 경로 세그먼트 찾기
+            min_distance = float('inf')
+            closest_step_index = 0
+
+            for i, step in enumerate(steps):
+                step_coords = step['geometry']['coordinates'][0]
+                distance = self.calculate_distance(
+                    current_location,
+                    (step_coords[1], step_coords[0])
+                )
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_step_index = i
+
+            # 현재 세그먼트의 안내 메시지 생성
+            current_step = steps[closest_step_index]
+            
+            # 현재 단계의 거리
+            distance = int(current_step['distance'])
+            
+            # 현재 단계의 조작 타입 가져오기
+            maneuver = current_step.get('maneuver', {})
+            maneuver_type = maneuver.get('type', 'continue')
+            maneuver_modifier = maneuver.get('modifier', '')
+            
+            # 조작 타입과 수정자를 결합
+            instruction_key = f"{maneuver_type} {maneuver_modifier}".strip()
+            if instruction_key in instruction_translation:
+                base_instruction = instruction_translation[instruction_key]
+            else:
+                base_instruction = instruction_translation.get(maneuver_type, "직진")
+
+            # 목적지까지 남은 거리 계산
+            remaining_distance = sum(step['distance'] for step in steps[closest_step_index:])
+            
+            # 마지막 단계인 경우
+            if closest_step_index == len(steps) - 1:
+                return "목적지에 도착했습니다."
+            
+            # 다음 단계의 안내 준비
+            next_step = steps[closest_step_index + 1]
+            next_maneuver = next_step.get('maneuver', {})
+            next_type = next_maneuver.get('type', 'continue')
+            next_modifier = next_maneuver.get('modifier', '')
+            next_instruction_key = f"{next_type} {next_modifier}".strip()
+            
+            next_instruction = instruction_translation.get(
+                next_instruction_key,
+                instruction_translation.get(next_type, "직진")
+            )
+
+            # 현재 위치에서 다음 조작까지의 거리
+            distance_to_next = int(current_step['distance'])
+
+            # 안내 메시지 생성
+            if distance_to_next < 20:
+                instruction = f"잠시 후 {next_instruction}하세요."
+            else:
+                instruction = f"{distance_to_next}m 앞에서 {next_instruction}하세요."
+
+            # 전체 남은 거리 추가
+            if remaining_distance > 1000:
+                instruction += f" 목적지까지 {remaining_distance/1000:.1f}km 남았습니다."
+            else:
+                instruction += f" 목적지까지 {int(remaining_distance)}m 남았습니다."
+
+            self.last_instruction = instruction
+            return instruction
+
+        except Exception as e:
+            logger.error(f"안내 메시지 생성 중 오류 발생: {str(e)}")
+            return "경로 안내 중 오류가 발생했습니다."
+
+    def translate_instruction(self, maneuver: str, distance: int) -> str:
+        """안내 메시지를 한글로 변환합니다"""
+        base_instruction = instruction_translation.get(maneuver, "직진")
+        
+        if distance < 1000:
+            return f"{distance}m 앞까지 {base_instruction}입니다."
+        else:
+            return f"{distance/1000:.1f}km 앞까지 {base_instruction}입니다."
+
+    def calculate_distance(self, point1: Tuple[float, float], point2: Tuple[float, float]) -> float:
+        """두 지점 간의 거리를 계산합니다 (미터 단위)"""
+        R = 6371000  # 지구의 반경 (미터)
+        lat1, lon1 = radians(point1[0]), radians(point1[1])
+        lat2, lon2 = radians(point2[0]), radians(point2[1])
+        
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1-a))
+        
+        return R * c
 
     def format_route(self, route: Dict) -> Dict:
-        """경로 정보 포맷팅"""
+        """경로 데이터를 GUI에 맞게 포맷합니다"""
         try:
+            coordinates = route['geometry']['coordinates']
             formatted_route = {
-                'distance': route.get('distance', 0),  # 총 거리 (미터)
-                'duration': route.get('duration', 0),  # 예상 소요 시간 (초)
-                'geometry': route.get('geometry', {}),  # 경로 좌표
-                'steps': []
+                'route': [ (coord[1], coord[0]) for coord in coordinates ]  # [위도, 경도] 형식으로 변환
             }
-
-            for leg in route.get('legs', []):
-                for step in leg.get('steps', []):
-                    formatted_step = self.format_instruction(step)
-                    if formatted_step:
-                        formatted_route['steps'].append(formatted_step)
-
+            logger.debug(f"경로 포맷 완료: {formatted_route}")
             return formatted_route
-
+        except KeyError as e:
+            logger.error(f"경로 포맷 중 키 오류 발생: {e}")
+            return {}
         except Exception as e:
-            logger.error(f"경로 포맷팅 중 오류 발생: {str(e)}")
+            logger.error(f"경로 포맷 중 예외 발생: {str(e)}")
+            return {}
+            
+class GeocodingManager:
+    def validate_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """주소를 좌표로 변환"""
+        # 예시: 주소를 좌표로 변환하는 로직
+        if address == "대연역":
+            return (35.1349964, 129.091565)  # 대연역 좌표
+        else:
+            logger.warning(f"유효하지 않은 주소: {address}")
             return None
-
-    def format_instruction(self, step: Dict) -> Optional[str]:
-        """경로 안내 단계를 한국어로 포맷팅"""
-        try:
-            # 거리 포맷팅
-            distance_m = int(step.get('distance', 0))
-            if distance_m >= 1000:
-                distance_text = f"{distance_m/1000:.1f}km"
-            else:
-                distance_text = f"{distance_m}m"
-
-            # 안내문 생성
-            maneuver = step.get('maneuver', {})
-            instruction = self.get_korean_instruction(maneuver)
-
-            # 도로명 추가
-            road_name = step.get('name', '')
-            if road_name:
-                road_info = f" ({road_name})"
-            else:
-                road_info = ""
-
-            # 최종 안내문 조합
-            if maneuver.get('type') == 'arrive':
-                return f"{distance_text} 앞에서 {instruction}입니다{road_info}"
-            else:
-                return f"{distance_text} 앞에서 {instruction}하세요{road_info}"
-
-        except Exception as e:
-            logger.error(f"안내문 생성 중 오류 발생: {str(e)}")
-            return "안내문을 생성할 수 없습니다"
-
-    def get_korean_instruction(self, maneuver: Dict) -> str:
-        """maneuver 정보를 바탕으로 한국어 안내문을 생성"""
-        try:
-            maneuver_type = maneuver.get('type', '')
-            modifier = maneuver.get('modifier', '')
             
-            # type과 modifier를 조합한 키 생성
-            instruction_key = f"{maneuver_type} {modifier}".strip()
-            
-            # 번역 시도 순서:
-            # 1. 전체 문구 번역 시도
-            # 2. type만 번역 시도
-            # 3. 기본값 사용
-            if instruction_key in instruction_translation:
-                return instruction_translation[instruction_key]
-            elif maneuver_type in instruction_translation:
-                return instruction_translation[maneuver_type]
-            else:
-                return "직진"
-
-        except Exception as e:
-            logger.error(f"안내문 변환 중 오류 발생: {str(e)}")
-            return "직진"
-
-# 테스트 코드
-if __name__ == "__main__":
-    route_manager = RouteManager()
-    
-    # 테스트 좌표 (부산대학교 - 해운대해수욕장)
-    start = (35.2333, 129.0833)  # 부산대학교 좌표
-    end = (35.1589, 129.1600)    # 해운대해수욕장 좌표
-    
-    route = route_manager.get_directions(start, end)
-    if route:
-        print(f"총 거리: {route['distance']/1000:.1f}km")
-        print(f"예상 소요 시간: {route['duration']/60:.0f}분")
-        print("\n경로 안내:")
-        for step in route['steps']:
-            print(f"- {step}")
