@@ -1,0 +1,87 @@
+# 서버 설정
+server:
+  host: "0.0.0.0"
+  port: 8000
+  ws_path: "/ws"
+
+# OSRM 엔진 설정
+osrm:
+  path: "/mnt/c/Users/user/Desktop/OSRM/osrm-backend/build/osrm-routed"
+  map_path: "/mnt/c/Users/user/Desktop/OSRM/maps/south-korea-latest.osrm"
+  port: 5000
+  algorithm: "mld"
+  max_retries: 3
+  timeout: 10
+
+# 클라이언트 설정
+client:
+  server_url: "ws://localhost:8000/ws"
+  audio:
+    input_device: 1  # USB 마이크 장치 번호, 내장마이크 사용시 2
+    output_device: 20  # 노트북 내장 스피커
+
+# 경로 탐색 설정
+routing:
+  osrm_url: "http://localhost:5000"
+  reroute_threshold: 10  # 미터
+  arrival_threshold: 20  # 미터
+  api_timeout: 10  # 초
+  cache_duration: 300  # 초
+
+# 지오코딩 설정
+geocoding:
+  user_agent: "MyApp/1.0"
+  timeout: 10
+  max_retries: 3
+  cache_size: 100
+  nominatim_url: "https://nominatim.openstreetmap.org"
+
+# 음성 설정
+tts:
+  rate: 150
+  language: "ko"
+  volume: 1.0
+  voice_id: "DEFAULT"
+
+# GUI 설정
+gui:
+  width: 800
+  height: 600
+  default_zoom: 13
+  default_location:
+    latitude: 35.1795543
+    longitude: 129.0756416
+  update_interval: 1
+  map_style: "OpenStreetMap"
+
+# 로깅 설정
+logging:
+  level: "INFO"
+  file: "navigation.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 성능 설정
+performance:
+  cache_enabled: true
+  max_concurrent_requests: 10
+  connection_timeout: 30
+  read_timeout: 30
+  keep_alive: true
+  pool_size: 10
+
+# 보안 설정
+security:
+  ssl_enabled: false
+  cert_file: ""
+  key_file: ""
+  allowed_origins: ["*"]
+  max_connections: 100
+
+# 디버그 설정
+debug:
+  enabled: false
+  verbose: false
+  save_raw_data: false
+  profile_enabled: false

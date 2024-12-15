@@ -1,1 +1,6 @@
-osrm-backend/
+osrm-backend/** 
+maps/**/__pycache__/
+**/__pycache__/
+*.pyc
+maps/south-korea-latest.osrm.*
+maps/south-korea-latest.osm.pbf
